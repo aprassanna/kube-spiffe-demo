@@ -3,18 +3,18 @@ info:
   title: Checkout Service (Service B)
   version: 0.1.0
   description: |
-    Service B in the SPIFFE demo. Every /api/** request must carry a JWT-SVID as a bearer
-    token. The token must:
-      - be signed by the SPIRE trust domain (verified against the SPIRE JWT bundle),
-      - have audience `checkout-service`,
-      - be unexpired, and
-      - have a SPIFFE ID listed in the allow-list (default spiffe://example.org/ns/cart/sa/cart-service).
-    /actuator/** is open for health checks.
+    Service B in the SPIFFE demo. The API listens on HTTPS and requires a client certificate
+    (mutual TLS). The client's X.509-SVID must:
+      - chain to the SPIRE trust bundle for example.org,
+      - carry a SPIFFE ID in its URI SAN that is on the allow-list
+        (default spiffe://example.org/ns/cart/sa/cart-service).
+    A client without a valid certificate fails at the TLS handshake and never reaches the API.
+    Health checks run on a separate plain-HTTP management port (8081) at /actuator/health.
 servers:
-  - url: http://checkout-service.checkout.svc.cluster.local
-    description: In-cluster address (reachable only from workloads that can get a JWT-SVID)
+  - url: https://checkout-service.checkout.svc.cluster.local
+    description: In-cluster address (port 443, reachable only with a valid X.509-SVID)
 security:
-  - spiffeJwtSvid: []
+  - mutualTls: []
 paths:
   /api/v1/orders:
     post:
@@ -41,13 +41,13 @@ paths:
         "400":
           $ref: "#/components/responses/ProblemDetail"
         "401":
-          description: Missing, malformed, forged, expired or wrong-audience JWT-SVID.
+          description: No client certificate with a SPIFFE ID reached the application.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Valid JWT-SVID, but the SPIFFE ID is not on the allow-list.
+          description: Valid client certificate, but its SPIFFE ID is not on the allow-list.
           content:
             application/problem+json:
               schema:
@@ -70,18 +70,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/OrderResponse"
         "401":
-          description: Missing, malformed, forged, expired or wrong-audience JWT-SVID.
+          description: No client certificate with a SPIFFE ID reached the application.
         "403":
-          description: Valid JWT-SVID, but the SPIFFE ID is not on the allow-list.
+          description: Valid client certificate, but its SPIFFE ID is not on the allow-list.
         "404":
           description: No such order.
 components:
   securitySchemes:
-    spiffeJwtSvid:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: SPIFFE JWT-SVID issued by the SPIRE agent Workload API.
+    mutualTls:
+      type: mutualTLS
+      description: X.509-SVID issued by SPIRE, verified against the SPIRE trust bundle during the TLS handshake.
   schemas:
     CreateOrderRequest:
       type: object
@@ -123,7 +121,7 @@ components:
           example: PLACED
         placedBy:
           type: string
-          description: SPIFFE ID of the authenticated caller.
+          description: SPIFFE ID of the authenticated caller, taken from its client certificate.
         createdAt:
           type: string
           format: date-time

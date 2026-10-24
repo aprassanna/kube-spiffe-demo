@@ -36,9 +36,20 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.apache.httpcomponents.client5</groupId>
+      <artifactId>httpclient5</artifactId>
+    </dependency>
+    <dependency>
       <groupId>io.spiffe</groupId>
       <artifactId>java-spiffe-core</artifactId>
       <version>${java-spiffe.version}</version>
+    </dependency>
+    <!-- Unix-domain-socket gRPC transport for the Workload API (Linux containers). -->
+    <dependency>
+      <groupId>io.spiffe</groupId>
+      <artifactId>grpc-netty-linux</artifactId>
+      <version>${java-spiffe.version}</version>
+      <scope>runtime</scope>
     </dependency>
 
     <dependency>

@@ -1,5 +1,5 @@
-# Service B: Checkout. Accepts /api/** only from a valid JWT-SVID whose SPIFFE ID is on
-# the allow-list (SPIFFE_ALLOWED_CALLERS). Its own SPIFFE ID is
+# Service B: Checkout. Serves /api/** over mutual TLS on 8443. The client certificate must carry
+# an X.509-SVID whose SPIFFE ID is on the allow-list (SPIFFE_ALLOWED_CALLERS). Its own SPIFFE ID is
 # spiffe://example.org/ns/checkout/sa/checkout-service, registered by scripts/spire-bootstrap.sh.
 apiVersion: v1
 kind: ServiceAccount
@@ -32,27 +32,29 @@ spec:
       containers:
         - name: checkout-service
           image: AR_PREFIX/checkout-service:0.1.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
-            - name: http
-              containerPort: 8080
+            - name: https
+              containerPort: 8443
+            - name: management
+              containerPort: 8081
           env:
             - name: SPIFFE_ENDPOINT_SOCKET
               value: unix:///run/spire/agent-sockets/spire-agent.sock
-            - name: SPIFFE_AUDIENCE
-              value: checkout-service
+            - name: SPIFFE_TRUST_DOMAIN
+              value: example.org
             - name: SPIFFE_ALLOWED_CALLERS
               value: spiffe://example.org/ns/cart/sa/cart-service
           readinessProbe:
             httpGet:
               path: /actuator/health
-              port: http
+              port: management
             initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /actuator/health
-              port: http
+              port: management
             initialDelaySeconds: 60
             periodSeconds: 20
           resources:
@@ -90,6 +92,6 @@ spec:
   selector:
     app.kubernetes.io/name: checkout-service
   ports:
-    - name: http
-      port: 80
-      targetPort: http
+    - name: https
+      port: 443
+      targetPort: https

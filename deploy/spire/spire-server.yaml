@@ -24,6 +24,10 @@ rules:
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]
     verbs: ["create"]
+  # k8s_psat also reads the agent pod and its node to confirm the attestation.
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

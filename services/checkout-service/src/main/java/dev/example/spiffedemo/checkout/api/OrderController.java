@@ -2,7 +2,7 @@ package dev.example.spiffedemo.checkout.api;
 
 import dev.example.spiffedemo.checkout.api.OrderApi.CreateOrderRequest;
 import dev.example.spiffedemo.checkout.api.OrderApi.OrderResponse;
-import dev.example.spiffedemo.checkout.security.SpiffeJwtAuthenticationFilter;
+import dev.example.spiffedemo.checkout.security.SpiffeAuthorizationFilter;
 import dev.example.spiffedemo.checkout.service.OrderService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -28,7 +28,7 @@ public class OrderController {
     @PostMapping
     public ResponseEntity<OrderResponse> create(@Valid @RequestBody CreateOrderRequest request,
                                                 HttpServletRequest httpRequest) {
-        String caller = (String) httpRequest.getAttribute(SpiffeJwtAuthenticationFilter.CALLER_ATTRIBUTE);
+        String caller = (String) httpRequest.getAttribute(SpiffeAuthorizationFilter.CALLER_ATTRIBUTE);
         OrderResponse order = orders.placeOrder(request, caller);
         return ResponseEntity.created(URI.create("/api/v1/orders/" + order.orderId())).body(order);
     }

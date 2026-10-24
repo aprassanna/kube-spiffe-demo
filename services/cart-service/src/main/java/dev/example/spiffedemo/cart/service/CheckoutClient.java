@@ -3,57 +3,92 @@ package dev.example.spiffedemo.cart.service;
 import dev.example.spiffedemo.cart.api.CartApi.CartItem;
 import dev.example.spiffedemo.cart.api.CartApi.CheckoutOrderRequest;
 import dev.example.spiffedemo.cart.api.CartApi.CheckoutOrderResponse;
-import io.spiffe.exception.JwtSvidException;
-import io.spiffe.workloadapi.JwtSource;
+import dev.example.spiffedemo.cart.tls.SvidRotation;
+import dev.example.spiffedemo.cart.tls.SvidSnapshot;
+import dev.example.spiffedemo.cart.tls.TlsMaterial;
+import java.io.IOException;
+import java.security.GeneralSecurityException;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.net.ssl.SSLContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.ssl.DefaultClientTlsStrategy;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
 /**
- * Calls checkout-service over REST. Each call carries a fresh JWT-SVID issued by SPIRE to this
- * workload's SPIFFE ID, for the checkout audience.
+ * Calls checkout-service over mutual TLS. The client presents this workload's X.509-SVID and
+ * accepts the server only if its SPIFFE ID is the expected checkout identity. The RestClient is
+ * rebuilt whenever SPIRE rotates the SVID.
  */
 @Component
 public class CheckoutClient {
 
-    private final RestClient restClient;
-    private final JwtSource jwtSource;
-    private final String audience;
+    private static final Logger log = LoggerFactory.getLogger(CheckoutClient.class);
 
-    public CheckoutClient(RestClient.Builder builder,
-                          JwtSource jwtSource,
+    private final SvidRotation svid;
+    private final String baseUrl;
+    private final Set<String> expectedServerIds;
+    private final AtomicReference<ClientCache> cache = new AtomicReference<>();
+
+    public CheckoutClient(SvidRotation svid,
                           @Value("${checkout.base-url}") String baseUrl,
-                          @Value("${checkout.audience}") String audience) {
-        this.restClient = builder.baseUrl(baseUrl).build();
-        this.jwtSource = jwtSource;
-        this.audience = audience;
+                          @Value("${checkout.expected-server-id}") String expectedServerId) {
+        this.svid = svid;
+        this.baseUrl = baseUrl;
+        this.expectedServerIds = Set.of(expectedServerId);
     }
 
     public CheckoutOrderResponse placeOrder(String cartId, List<CartItem> items) {
-        String token = fetchJwtSvid();
         try {
-            return restClient.post()
+            return restClient().post()
                     .uri("/api/v1/orders")
-                    .headers(headers -> headers.setBearerAuth(token))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(new CheckoutOrderRequest(cartId, items))
                     .retrieve()
                     .body(CheckoutOrderResponse.class);
         } catch (RestClientException e) {
-            throw new CartException(HttpStatus.BAD_GATEWAY, "checkout-service did not accept the order", e);
+            log.warn("checkout call failed: {}", e.getMessage());
+            throw new CartException(HttpStatus.BAD_GATEWAY, "checkout-service did not accept the mTLS call", e);
         }
     }
 
-    private String fetchJwtSvid() {
-        try {
-            return jwtSource.fetchJwtSvid(audience).getToken();
-        } catch (JwtSvidException e) {
-            throw new CartException(HttpStatus.SERVICE_UNAVAILABLE,
-                    "No JWT-SVID available from the SPIRE agent for audience " + audience, e);
+    private RestClient restClient() {
+        SvidSnapshot snapshot = svid.current();
+        ClientCache cached = cache.get();
+        if (cached != null && cached.snapshot() == snapshot) {
+            return cached.client();
         }
+        try {
+            SSLContext context = TlsMaterial.clientContext(snapshot, expectedServerIds);
+            // The server is identified by its SPIFFE ID (ServerIdentityTrustManager), not by DNS name.
+            // The X.509-SVID has no DNS SAN, so the hostname check is replaced by that identity check.
+            CloseableHttpClient http = HttpClients.custom()
+                    .setConnectionManager(PoolingHttpClientConnectionManagerBuilder.create()
+                            .setTlsSocketStrategy(new DefaultClientTlsStrategy(context, (host, session) -> true))
+                            .build())
+                    .build();
+            RestClient client = RestClient.builder()
+                    .baseUrl(baseUrl)
+                    .requestFactory(new HttpComponentsClientHttpRequestFactory(http))
+                    .build();
+            cache.set(new ClientCache(snapshot, client));
+            return client;
+        } catch (GeneralSecurityException | IOException e) {
+            throw new CartException(HttpStatus.SERVICE_UNAVAILABLE, "Could not build the mTLS client from the SVID", e);
+        }
+    }
+
+    private record ClientCache(SvidSnapshot snapshot, RestClient client) {
     }
 }

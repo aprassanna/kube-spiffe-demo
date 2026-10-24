@@ -11,8 +11,12 @@ management:
       exposure:
         include: health,info
 
+spiffe:
+  # Trust domain of the SPIRE deployment. Must match the SPIRE server configuration.
+  trust-domain: ${SPIFFE_TRUST_DOMAIN:example.org}
+
 checkout:
-  # In-cluster URL of checkout-service. Override with CHECKOUT_BASE_URL.
-  base-url: ${CHECKOUT_BASE_URL:http://checkout-service.checkout.svc.cluster.local}
-  # JWT-SVID audience. Must match checkout-service spiffe.audience.
-  audience: ${CHECKOUT_AUDIENCE:checkout-service}
+  # Checkout is reached over mutual TLS on its HTTPS port.
+  base-url: ${CHECKOUT_BASE_URL:https://checkout-service.checkout.svc.cluster.local}
+  # The SPIFFE ID the checkout server must present. Any other identity is refused.
+  expected-server-id: ${CHECKOUT_SPIFFE_ID:spiffe://example.org/ns/checkout/sa/checkout-service}

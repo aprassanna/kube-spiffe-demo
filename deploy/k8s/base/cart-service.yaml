@@ -1,5 +1,6 @@
 # Service A: Add to Cart. Its SPIFFE ID is spiffe://example.org/ns/cart/sa/cart-service,
-# registered by scripts/spire-bootstrap.sh register.
+# registered by scripts/spire-bootstrap.sh register. It calls checkout over mutual TLS, presenting
+# its X.509-SVID and accepting only the checkout SPIFFE ID.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -31,17 +32,19 @@ spec:
       containers:
         - name: cart-service
           image: AR_PREFIX/cart-service:0.1.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
           env:
             - name: SPIFFE_ENDPOINT_SOCKET
               value: unix:///run/spire/agent-sockets/spire-agent.sock
+            - name: SPIFFE_TRUST_DOMAIN
+              value: example.org
             - name: CHECKOUT_BASE_URL
-              value: http://checkout-service.checkout.svc.cluster.local
-            - name: CHECKOUT_AUDIENCE
-              value: checkout-service
+              value: https://checkout-service.checkout.svc.cluster.local
+            - name: CHECKOUT_SPIFFE_ID
+              value: spiffe://example.org/ns/checkout/sa/checkout-service
           readinessProbe:
             httpGet:
               path: /actuator/health

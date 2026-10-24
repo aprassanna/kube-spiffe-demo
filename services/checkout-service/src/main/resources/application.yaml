@@ -1,19 +1,30 @@
+# Business API: HTTPS on 8443, mutual TLS with X.509-SVIDs issued by SPIRE.
+# The client must present a certificate; the handshake fails otherwise.
 server:
-  port: 8080
+  port: 8443
+  ssl:
+    enabled: true
+    bundle: spiffe
+    client-auth: need
 
-spring:
-  application:
-    name: checkout-service
-
+# Health probes on a separate plain-HTTP port, so kubelet probes need no client certificate.
 management:
+  server:
+    port: 8081
+    # Probes stay plain HTTP. Without this, the server.ssl settings above would apply here too.
+    ssl:
+      enabled: false
   endpoints:
     web:
       exposure:
         include: health,info
 
-# SPIFFE settings. Environment variables override these in the Kubernetes manifests.
+spring:
+  application:
+    name: checkout-service
+
 spiffe:
-  # Audience a caller must put in its JWT-SVID. Must match the cart-service checkout.audience.
-  audience: ${SPIFFE_AUDIENCE:checkout-service}
-  # Comma-separated SPIFFE IDs allowed to call /api/**.
+  # Trust domain of the SPIRE deployment. Must match the SPIRE server configuration.
+  trust-domain: ${SPIFFE_TRUST_DOMAIN:example.org}
+  # Comma-separated SPIFFE IDs allowed to call /api/**. Authorization is applied after the handshake.
   allowed-callers: ${SPIFFE_ALLOWED_CALLERS:spiffe://example.org/ns/cart/sa/cart-service}

@@ -1,59 +1,86 @@
 #!/usr/bin/env bash
-# Demo: an allowed call succeeds, and calls from an unregistered workload are rejected.
+# End-to-end demo and assertions for the mutual-TLS identity flow on a live cluster.
 #
-#   1. Add items to a cart in the cart namespace and check out. Cart calls checkout with its
-#      JWT-SVID. Expect 201 with an order.
-#   2. From the "rogue" namespace, which has no SPIFFE registration entry, call checkout
-#      directly with no credential. Expect 401.
-#   3. Same workload with a forged token claiming to be the cart service (alg=none). Expect 401.
+#   1. ALLOWED:  cart-service (SPIFFE ID ns/cart/sa/cart-service) checks out through checkout-service
+#                over mTLS. Expect 201, and checkout logs the authenticated caller.
+#   2. REJECTED: a "rogue" workload with no SPIRE identity connects with no client certificate.
+#                Expect the TLS handshake to fail (curl exit != 0, no HTTP response).
+#   3. REJECTED: the same workload presents a self-signed certificate that SPIRE did not issue.
+#                Expect the handshake to fail again.
 #
-# Requires kubectl access to the cluster and deploy.sh to have completed.
-set -euo pipefail
+# Exits non-zero if any expectation fails.
+set -uo pipefail
 
 ROGUE_NS="rogue"
-ROGUE_IMAGE="curlimages/curl:8.11.1"
-CHECKOUT_URL="http://checkout-service.checkout.svc.cluster.local/api/v1/orders"
+ROGUE_IMAGE="alpine:3.20"
+CHECKOUT_URL="https://checkout-service.checkout.svc.cluster.local/api/v1/orders"
+CALLER_ID="spiffe://example.org/ns/cart/sa/cart-service"
 LOCAL_PORT="${LOCAL_PORT:-18080}"
+PASSED=0
+FAILED=0
 
 say() { printf '\n== %s\n' "$*"; }
 
-# Base64url without padding, as JWTs require.
-b64url() { base64 | tr -d '=\n' | tr '/+' '_-'; }
+expect() {
+  local label="$1" ok="$2" detail="$3"
+  if [ "$ok" = yes ]; then
+    PASSED=$((PASSED + 1)); printf 'PASS  %s\n' "$label"
+  else
+    FAILED=$((FAILED + 1)); printf 'FAIL  %s\n      %s\n' "$label" "$detail"
+  fi
+}
 
-say "Step 0: show the registration entries that SPIRE holds"
-kubectl -n spire-system exec deploy/spire-server -- /opt/spire/bin/spire-server entry show \
-  | grep -E 'SPIFFE ID|Selector' | grep -E 'ns/(cart|checkout)|k8s:' || true
+# Runs a shell snippet in a throwaway pod in the rogue namespace (no SPIRE registration, no socket).
+rogue() {
+  kubectl -n "$ROGUE_NS" run "rogue-$RANDOM" --rm -i --restart=Never --quiet --image="$ROGUE_IMAGE" -- \
+    sh -c "apk add --no-cache -q curl openssl >/dev/null 2>&1 && $1" 2>&1
+}
 
-say "Step 1: ALLOWED. cart-service adds items and checks out through checkout-service"
+say "SPIRE registration entries"
+kubectl -n spire-system exec deploy/spire-server -- /opt/spire/bin/spire-server entry show 2>&1 \
+  | grep -E 'SPIFFE ID|Selector' | grep -E 'ns/(cart|checkout)|k8s:(ns|sa):(cart|checkout)' || true
+
+say "1. ALLOWED: cart -> checkout over mTLS"
 kubectl -n cart port-forward svc/cart-service "$LOCAL_PORT:80" >/dev/null 2>&1 &
 PF_PID=$!
-trap 'kill $PF_PID 2>/dev/null || true; kubectl -n "$ROGUE_NS" delete pod rogue-client --ignore-not-found >/dev/null 2>&1 || true' EXIT
+trap 'kill $PF_PID 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do
   curl -sf "http://localhost:$LOCAL_PORT/actuator/health" >/dev/null 2>&1 && break
   sleep 1
 done
 
-curl -s -o /dev/null -w 'add item   -> HTTP %{http_code}\n' -X POST "http://localhost:$LOCAL_PORT/api/carts/demo-cart/items" \
-  -H 'Content-Type: application/json' -d '{"sku":"book-001","quantity":2,"unitPriceCents":1250}'
+ADD_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://localhost:$LOCAL_PORT/api/carts/demo-cart/items" \
+  -H 'Content-Type: application/json' -d '{"sku":"book-001","quantity":2,"unitPriceCents":1250}')"
+expect "add item to cart returns 201" "$([ "$ADD_CODE" = 201 ] && echo yes || echo no)" "got HTTP $ADD_CODE"
+
 ORDER_FILE="$(mktemp)"
-curl -s -o "$ORDER_FILE" -w 'checkout    -> HTTP %{http_code}\n' -X POST "http://localhost:$LOCAL_PORT/api/carts/demo-cart/checkout"
+CHECKOUT_CODE="$(curl -s -o "$ORDER_FILE" -w '%{http_code}' -X POST "http://localhost:$LOCAL_PORT/api/carts/demo-cart/checkout")"
 cat "$ORDER_FILE"; echo
+expect "checkout returns 201" "$([ "$CHECKOUT_CODE" = 201 ] && echo yes || echo no)" "got HTTP $CHECKOUT_CODE"
+expect "order records the mTLS caller SPIFFE ID" \
+  "$(grep -q "\"placedBy\":\"$CALLER_ID\"" "$ORDER_FILE" && echo yes || echo no)" "placedBy missing or different"
 rm -f "$ORDER_FILE"
 
-say "Step 2: REJECTED. unregistered 'rogue' workload calls checkout with no credential"
+kill "$PF_PID" 2>/dev/null || true
+trap - EXIT
+
+LOG_LINE="$(kubectl -n checkout logs deploy/checkout-service --tail=200 | grep "Authenticated caller $CALLER_ID" | tail -1)"
+expect "checkout log shows the authenticated caller" "$([ -n "$LOG_LINE" ] && echo yes || echo no)" "no matching log line"
+[ -n "$LOG_LINE" ] && echo "log: $LOG_LINE"
+
 kubectl create namespace "$ROGUE_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl -n "$ROGUE_NS" run rogue-client --rm -i --restart=Never --quiet --image="$ROGUE_IMAGE" -- \
-  sh -c "curl -s -w '\nno credential -> HTTP %{http_code}\n' -X POST '$CHECKOUT_URL' \
-    -H 'Content-Type: application/json' -d '{\"cartId\":\"x\",\"items\":[{\"sku\":\"s\",\"quantity\":1,\"unitPriceCents\":1}]}'"
 
-say "Step 3: REJECTED. same workload sends a forged JWT claiming to be cart-service (alg=none)"
-HEADER="$(printf '{"alg":"none","typ":"JWT"}' | b64url)"
-PAYLOAD="$(printf '{"sub":"spiffe://example.org/ns/cart/sa/cart-service","aud":["checkout-service"],"exp":9999999999}' | b64url)"
-FORGED="$HEADER.$PAYLOAD."
-kubectl -n "$ROGUE_NS" run rogue-client --rm -i --restart=Never --quiet --image="$ROGUE_IMAGE" -- \
-  sh -c "curl -s -w '\nforged token -> HTTP %{http_code}\n' -X POST '$CHECKOUT_URL' \
-    -H 'Authorization: Bearer $FORGED' -H 'Content-Type: application/json' \
-    -d '{\"cartId\":\"x\",\"items\":[{\"sku\":\"s\",\"quantity\":1,\"unitPriceCents\":1}]}'"
+say "2. REJECTED: rogue workload, no client certificate"
+OUT="$(rogue "curl -sk -o /dev/null -w 'http=%{http_code}' -X POST $CHECKOUT_URL -H 'Content-Type: application/json' -d {}; echo \" curl_exit=\$?\"")"
+echo "$OUT"
+expect "no-certificate call fails at the TLS handshake" \
+  "$(echo "$OUT" | grep -q 'http=000' && echo "$OUT" | grep -Eq 'curl_exit=[1-9]' && echo yes || echo no)" "$OUT"
 
-say "Checkout service log (last lines, showing the accept and reject decisions)"
-kubectl -n checkout logs deploy/checkout-service --tail=40 | grep -E 'Authenticated caller|Rejected' || true
+say "3. REJECTED: rogue workload, self-signed certificate not issued by SPIRE"
+OUT="$(rogue "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout /tmp/k.pem -out /tmp/c.pem -days 1 -subj /CN=rogue -addext subjectAltName=URI:spiffe://example.org/ns/cart/sa/cart-service >/dev/null 2>&1 && curl -sk --cert /tmp/c.pem --key /tmp/k.pem -o /dev/null -w 'http=%{http_code}' -X POST $CHECKOUT_URL -H 'Content-Type: application/json' -d {}; echo \" curl_exit=\$?\"")"
+echo "$OUT"
+expect "self-signed certificate fails at the TLS handshake" \
+  "$(echo "$OUT" | grep -q 'http=000' && echo "$OUT" | grep -Eq 'curl_exit=[1-9]' && echo yes || echo no)" "$OUT"
+
+say "Result: $PASSED passed, $FAILED failed"
+[ "$FAILED" -eq 0 ]

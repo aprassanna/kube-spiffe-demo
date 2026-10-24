@@ -1,61 +1,62 @@
-# SPIFFE workload identity demo: Add to Cart → Checkout
+# SPIFFE workload identity demo: Add to Cart → Checkout (mTLS)
 
-A small Spring Boot sample showing service-to-service authentication with
-[SPIFFE](https://spiffe.io) identities issued by [SPIRE](https://spiffe.io/docs/latest/spire-about/):
+A small Spring Boot sample showing service-to-service **mutual TLS** with **X.509-SVID**
+identities issued by [SPIRE](https://spiffe.io/docs/latest/spire-about/) on Kubernetes.
 
-- **Service A, `cart-service` ("Add to Cart")** calls **Service B, `checkout-service` ("Checkout")** over REST.
-- Every call carries a **JWT-SVID** that SPIRE issues to cart-service's SPIFFE ID.
-- Checkout **validates the token** against the SPIRE trust bundle, then **checks the caller's SPIFFE ID** against an allow-list.
-- A workload with no registration entry gets no identity and is rejected.
+- **Service A, `cart-service` ("Add to Cart")** calls **Service B, `checkout-service` ("Checkout")** over HTTPS.
+- Both sides present X.509 certificates. SPIRE issues them to each workload's SPIFFE ID, based on its Kubernetes ServiceAccount.
+- Checkout requires a client certificate in the TLS handshake. It checks the caller's SPIFFE ID against an allow-list.
+- Cart accepts the server only if the server presents the checkout SPIFFE ID.
+- A workload with no SPIRE registration has no certificate, so the handshake fails.
+- Certificates rotate automatically. Both services poll the SPIRE agent and reload their TLS material.
 
-The sample is generic. It uses the reserved trust domain `example.org` and no company-specific names.
+The sample is generic. It uses the reserved trust domain `example.org` and has no company-specific names.
 
 ```
- cart namespace                          checkout namespace
-┌────────────────────────┐  POST /api/   ┌──────────────────────────┐
-│ cart-service           │  v1/orders    │ checkout-service         │
-│ spiffe://…/ns/cart/…   │ ────────────► │ 1. verify JWT-SVID       │
-│ + JWT-SVID (aud=       │ Bearer JWT-SVID│    (signature, aud, exp) │
-│   checkout-service)    │               │ 2. allow-list SPIFFE ID  │
-└──────────┬─────────────┘               └──────────────────────────┘
-           │ Workload API (unix socket)           ▲
-           ▼                                      │ rejected: 401 / 403
-  SPIRE agent (DaemonSet)  ◄── SPIRE server ◄── rogue namespace (no entry, no SVID)
+ cart namespace                              checkout namespace
+┌────────────────────────────┐   HTTPS 443    ┌──────────────────────────────┐
+│ cart-service               │   mTLS         │ checkout-service             │
+│ SVID: spiffe://…/ns/cart/… │ ─────────────► │ 1. TLS handshake: client     │
+│ accepts only checkout's ID │ ◄───────────── │    cert chains to SPIRE CA   │
+└─────────────┬──────────────┘                │ 2. allow-list on SPIFFE ID   │
+              │ Workload API (unix socket)    └──────────────────────────────┘
+              ▼
+   SPIRE agent (DaemonSet) ◄── SPIRE server (CA + registration)
+                                      ▲
+   rogue namespace: no entry, no SVID ┘  → handshake refused
 ```
+
+## What is authenticated, and how
+
+| Hop | Client identity | Server identity | Enforced by |
+|---|---|---|---|
+| Cart → Checkout | cart's X.509-SVID (`…/ns/cart/sa/cart-service`) | checkout's X.509-SVID (`…/ns/checkout/sa/checkout-service`) | Checkout: TLS handshake (`client-auth: need`) plus SPIFFE allow-list. Cart: `ServerIdentityTrustManager` requires the expected SPIFFE ID. |
+| Anything → Cart | none (demo entry point) | none (plain HTTP) | Out of scope for this demo. |
+
+The PKI is SPIRE's built-in CA. SPIRE attests each node with the Kubernetes `k8s_psat` plugin, and attests each pod with the `k8s` workload attestor (namespace and ServiceAccount). Both attestations come from the Kubernetes API, so no static certificates are stored in the cluster.
 
 ## Repository layout
 
 ```
-services/cart-service/       Spring Boot 3.5, Java 21, Maven, Dockerfile
-services/checkout-service/   Spring Boot 3.5, Java 21, Maven, Dockerfile
+services/cart-service/       Spring Boot 3.5, Java 21, Maven, mTLS client
+services/checkout-service/   Spring Boot 3.5, Java 21, Maven, mTLS server + SPIFFE allow-list
+images/java-runtime/         Base runtime image spec (distroless Java 21, nonroot)
+cloudbuild.yaml              Builds the base image, then both services, into Artifact Registry
 deploy/spire/                SPIRE server and agent manifests (namespace spire-system)
 deploy/k8s/base/             Namespaces, ServiceAccounts, Deployments, Services for both services
 deploy/k8s/overlays/gke/     Overlay for GKE Standard
 deploy/k8s/overlays/kubeadm/ Overlay for kubeadm, adds the Artifact Registry pull secret
 infra/kubeadm/               Compute Engine VM creation and kubeadm cluster bootstrap
-scripts/                     build-and-push, spire-bootstrap (bundle + registration), deploy, validate, demo
+scripts/                     build, SPIRE bootstrap, deploy, validate, demo (assertions), test-all
 docs/API.md                  API reference
 docs/openapi/                OpenAPI 3 specs for both services
 ```
 
-## Identity model
-
-| Item | Value |
-|---|---|
-| Trust domain | `example.org` (in `deploy/spire/spire-server.yaml`) |
-| Cart SPIFFE ID | `spiffe://example.org/ns/cart/sa/cart-service` |
-| Checkout SPIFFE ID | `spiffe://example.org/ns/checkout/sa/checkout-service` |
-| Registration selectors | `k8s:ns:<namespace>`, `k8s:sa:<service account>` (created by `scripts/spire-bootstrap.sh register`) |
-| JWT-SVID audience | `checkout-service` |
-| Checkout allow-list | `SPIFFE_ALLOWED_CALLERS=spiffe://example.org/ns/cart/sa/cart-service` |
-
-Services reach the SPIRE agent through a read-only hostPath socket at `/run/spire/agent-sockets`, using `SPIFFE_ENDPOINT_SOCKET`.
-
 ## Prerequisites
 
-- Google Cloud project where you can create GKE or Compute Engine resources and Artifact Registry repositories.
-- Local tools: `gcloud` (authenticated), `docker` (with buildx), `kubectl`, JDK 21, Maven 3.9+, `kubeconform` (for validation only).
-- IAM: your user needs `roles/container.admin` (GKE) or `roles/compute.admin` (kubeadm), `roles/artifactregistry.admin`, and `roles/iap.tunnelResourceAccessor` for the kubeadm IAP tunnel.
+- A Google Cloud project where you can create GKE or Compute Engine resources, Artifact Registry repositories, and Cloud Build jobs.
+- Local tools: `gcloud` (authenticated), `kubectl` with the `gke-gcloud-auth-plugin`, JDK 21, Maven 3.9+, and `kubeconform` for manifest validation.
+- IAM: `roles/container.admin` (GKE) or `roles/compute.admin` (kubeadm), `roles/artifactregistry.admin`, `roles/cloudbuild.builds.editor`, and `roles/iap.tunnelResourceAccessor` for kubeadm.
 
 Set these once in your shell:
 
@@ -65,154 +66,132 @@ export REGION=us-central1
 export ZONE=us-central1-a
 export AR_REPO=spiffe-demo
 gcloud config set project "$PROJECT_ID"
-gcloud services enable artifactregistry.googleapis.com container.googleapis.com compute.googleapis.com iap.googleapis.com
+gcloud services enable artifactregistry.googleapis.com container.googleapis.com cloudbuild.googleapis.com compute.googleapis.com iap.googleapis.com
 gcloud artifacts repositories create "$AR_REPO" --repository-format=docker --location="$REGION"
 ```
 
-## 1. Build and test
+## 1. Test and build
 
-Build and test each service with Maven:
+Run every offline check (unit tests for both services and manifest validation):
 
 ```bash
-(cd services/cart-service && mvn -B verify)
-(cd services/checkout-service && mvn -B verify)
+RUN_E2E=0 scripts/test-all.sh
 ```
 
-Build the images and push them to Artifact Registry:
+Build the base runtime image and both services in Cloud Build, then push them to Artifact Registry. No local Docker daemon is needed:
 
 ```bash
 scripts/build-and-push.sh
 ```
 
-This produces `$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/{cart-service,checkout-service}:0.1.0`. The manifests reference this path through the `AR_PREFIX` placeholder, which `deploy.sh` fills in.
-
-Validate the manifests (needs `kubeconform`):
-
-```bash
-scripts/validate-manifests.sh
-```
+`cloudbuild.yaml` builds `images/java-runtime` first (distroless Java 21, nonroot). It then builds each service with `BASE_IMAGE` pointing at that image. The images are `$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/{java-runtime,cart-service,checkout-service}:0.1.0`.
 
 ## 2a. Target: GKE Standard cluster
 
-Create the cluster in your project and point `kubectl` at it:
-
 ```bash
 gcloud container clusters create spiffe-demo \
-  --zone "$ZONE" \
-  --num-nodes 2 \
-  --machine-type e2-standard-4
+  --zone "$ZONE" --num-nodes 2 --machine-type e2-standard-4
 
 gcloud container clusters get-credentials spiffe-demo --zone "$ZONE"
-```
 
-Deploy SPIRE and the services:
-
-```bash
 scripts/deploy.sh gke
 ```
 
-GKE nodes pull from Artifact Registry in the same project using the node service account. The default Compute Engine service account has the reader role it needs in most projects. If image pulls fail, grant `roles/artifactregistry.reader` to the node service account.
-
-Run the demo (section 3).
+GKE nodes pull from Artifact Registry in the same project through the node service account, which needs `roles/artifactregistry.reader`.
 
 ## 2b. Target: self-managed kubeadm cluster on Compute Engine
 
-This builds a three-node kubeadm cluster (one control plane, two workers) on Ubuntu 24.04 VMs in your project. It uses no public IPs; you reach the cluster through IAP.
-
-Create the VMs. Each runs `infra/kubeadm/bootstrap-node.sh` as its startup script (containerd, kubeadm, kubelet, kubectl). Wait 3–5 minutes after this step:
-
 ```bash
-infra/kubeadm/create-vms.sh
+infra/kubeadm/create-vms.sh      # control plane + 2 workers, Ubuntu 24.04, no public IPs
+infra/kubeadm/init-cluster.sh    # kubeadm init, Calico, join workers, write kubeconfig
 ```
 
-Initialize the control plane, install Calico, join the workers, and write a kubeconfig:
-
-```bash
-infra/kubeadm/init-cluster.sh
-```
-
-The kubeconfig points at `https://127.0.0.1:6443`. Open a second terminal and keep this IAP tunnel running:
+Keep this IAP tunnel open in a second terminal while you use kubectl:
 
 ```bash
 gcloud compute start-iap-tunnel spiffe-cp-1 6443 \
-  --local-host-port=localhost:6443 \
-  --zone "$ZONE" --project "$PROJECT_ID"
+  --local-host-port=localhost:6443 --zone "$ZONE" --project "$PROJECT_ID"
 ```
 
-In the first terminal, check the cluster:
+Then deploy:
 
 ```bash
 export KUBECONFIG="$HOME/.kube/spiffe-kubeadm.conf"
-kubectl get nodes -o wide
-```
-
-Build and push the images, then deploy. The deploy script creates an `artifact-registry` pull secret from your gcloud access token, because kubeadm nodes do not get Artifact Registry credentials automatically:
-
-```bash
-scripts/build-and-push.sh
 scripts/deploy.sh kubeadm
 ```
 
-The pull secret uses a short-lived access token, which expires in about an hour. If pods later show `ImagePullBackOff`, run `scripts/deploy.sh kubeadm` again to refresh it. For a longer-lived setup, use a kubelet image credential provider.
+The kubeadm target creates an `artifact-registry` pull secret from your gcloud access token. That token expires in about an hour. If pods show `ImagePullBackOff`, run `scripts/deploy.sh kubeadm` again.
 
-Run the demo (section 3).
+## 3. Deploy order
 
-## 3. Demo script
+`scripts/deploy.sh` applies things in this order, because each step depends on the one before:
 
-`scripts/demo.sh` runs three checks against the current cluster:
+1. SPIRE server, then `spire-bootstrap.sh bundle` publishes the trust bundle as a ConfigMap.
+2. SPIRE agents (one per node), then `spire-bootstrap.sh register` creates a registration entry for each agent and workload. Each entry maps `k8s:ns` and `k8s:sa` to a SPIFFE ID.
+3. Namespaces, then the two services.
+
+## 4. Demo and assertions
 
 ```bash
 scripts/demo.sh
 ```
 
-1. **Allowed call (expect `201`).** It port-forwards to cart-service, adds an item, and checks out. Cart-service fetches a JWT-SVID for the `checkout-service` audience and calls checkout. Checkout logs `Authenticated caller spiffe://example.org/ns/cart/sa/cart-service`.
-2. **Unregistered workload, no credential (expect `401`).** It runs a `curl` pod in the `rogue` namespace. That namespace has no registration entry, so SPIRE issues it no identity. The request has no bearer token, so checkout returns 401.
-3. **Unregistered workload, forged token (expect `401`).** The same pod sends an unsigned `alg=none` JWT that claims to be cart-service. Checkout rejects the signature.
-
-The script ends by printing the checkout log lines for accepted and rejected calls.
-
-To inspect the registration entries by hand:
+Or run everything, including the live demo:
 
 ```bash
-kubectl -n spire-system exec deploy/spire-server -- /opt/spire/bin/spire-server entry show
+scripts/test-all.sh
 ```
 
-To show the 403 path (a valid identity that is not on the allow-list), change `SPIFFE_ALLOWED_CALLERS` in the checkout deployment, or add another registered workload and call checkout from it.
+`demo.sh` asserts each step and exits non-zero on failure:
+
+1. **Allowed.** It port-forwards to cart and adds an item (expect `201`). It checks out, which makes cart call checkout over mTLS (expect `201`). The order's `placedBy` must be the cart SPIFFE ID, and the checkout log must show the authenticated caller.
+2. **Rejected, no certificate.** A pod in the `rogue` namespace, with no registration and no SPIRE socket, calls checkout with no client certificate. The TLS handshake must fail: no HTTP status, and a non-zero curl exit.
+3. **Rejected, untrusted certificate.** The same pod presents a self-signed certificate claiming the cart SPIFFE ID. SPIRE did not issue it, so the handshake must fail.
+
+A valid SPIFFE identity that is not on the allow-list gets `403` at the application layer. The unit tests cover that case (`SpiffeAuthorizationFilterTest`), and the live demo does not exercise it.
 
 ## Re-running and cleanup
 
-- After adding a node, run `scripts/spire-bootstrap.sh register` so the new agent gets entries.
+- After adding a node, run `scripts/spire-bootstrap.sh register`.
 - After a SPIRE server restart, run `scripts/spire-bootstrap.sh all`. The demo keeps SPIRE state in an `emptyDir`.
-- Remove the demo workloads and SPIRE:
-
-  ```bash
-  kubectl delete namespace cart checkout rogue spire-system --ignore-not-found
-  ```
-
+- Remove the workloads and SPIRE: `kubectl delete namespace cart checkout rogue spire-system --ignore-not-found`
 - GKE: `gcloud container clusters delete spiffe-demo --zone "$ZONE"`
-- kubeadm: `gcloud compute instances delete spiffe-cp-1 spiffe-worker-1 spiffe-worker-2 --zone "$ZONE"` (adjust for your `WORKERS`), then the two `spiffe-demo-allow-*` firewall rules.
+- kubeadm: `gcloud compute instances delete spiffe-cp-1 spiffe-worker-1 spiffe-worker-2 --zone "$ZONE"`, then delete the two `spiffe-demo-allow-*` firewall rules.
 
 ## Production notes and known limits
 
-This is a demonstration. Before using the pattern for real workloads:
-
-- **SPIRE state.** The server uses `emptyDir` and SQLite. Use a database and a persistent volume with a high-availability server.
+- **SPIRE state.** The server uses `emptyDir` and SQLite. Use a database and a persistent volume, with a highly available server.
 - **Kubelet verification.** The workload attestor sets `skip_kubelet_verification = true`. Configure `kubelet_ca_path` instead.
-- **Trust domain and cluster name.** Replace `example.org` and `demo-cluster` with your own values in `deploy/spire/` and in the service environment variables.
-- **Registration.** The demo creates entries with a script. Use the SPIRE controller manager, or the Helm charts, to keep entries in sync with Kubernetes objects.
-- **Image pull credentials on kubeadm.** Use a kubelet image credential provider instead of a short-lived access-token secret.
-- **mTLS.** This sample authenticates with JWT-SVIDs over HTTP. For transport encryption, put the services behind an mTLS-capable proxy, or switch to X.509-SVIDs with a TLS-aware client.
-- **Versions.** SPIRE images are pinned to `1.12.4`. Check for the current release before deploying, and update the image tags in `deploy/spire/`.
-- **Not run against a live cluster.** Both Maven builds and their unit tests pass, and the manifests validate with kubeconform. The end-to-end demo was not run here, because it needs a live GKE or kubeadm cluster.
+- **Upstream CA.** SPIRE uses its own self-signed CA here. To anchor SPIRE to an enterprise or Kubernetes-based PKI, configure an `UpstreamAuthority` plugin (for example cert-manager or a Vault PKI).
+- **Trust domain and cluster name.** Replace `example.org` and `demo-cluster` with your own values in `deploy/spire/` and in the services' environment variables.
+- **Registration.** Entries are created by script. Use the SPIRE controller manager to keep them in sync with Kubernetes objects.
+- **Keystore password.** The in-memory PKCS12 stores use a fixed demo password. Their contents never leave the process.
+- **Versions.** SPIRE images are pinned to `1.12.4`. Check for the current release before deploying.
+
+## Verified live run
+
+Run on GKE Standard (`spiffe-demo`, us-central1-a, 2 × e2-standard-4), Kubernetes 1.36, SPIRE 1.12.4, against images built by Cloud Build:
+
+```
+PASS  add item to cart returns 201
+PASS  checkout returns 201
+PASS  order records the mTLS caller SPIFFE ID
+PASS  checkout log shows the authenticated caller   (spiffe://example.org/ns/cart/sa/cart-service via mTLS)
+PASS  no-certificate call fails at the TLS handshake   (curl exit 56)
+PASS  self-signed certificate fails at the TLS handshake (curl exit 56)
+== Result: 6 passed, 0 failed
+```
+
+The kubeadm target has not been run.
 
 ## Quick reference
 
 | Task | Command |
 |---|---|
-| Test both services | `(cd services/cart-service && mvn -B verify)` and the same for `checkout-service` |
-| Build and push images | `scripts/build-and-push.sh` |
-| Validate manifests | `scripts/validate-manifests.sh` |
+| Offline checks | `RUN_E2E=0 scripts/test-all.sh` |
+| Build images in Cloud Build | `scripts/build-and-push.sh` |
 | Deploy to GKE | `scripts/deploy.sh gke` |
 | Deploy to kubeadm | `scripts/deploy.sh kubeadm` |
 | Run the demo | `scripts/demo.sh` |
+| Everything | `scripts/test-all.sh` |
 | API reference | [docs/API.md](docs/API.md) |

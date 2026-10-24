@@ -1,0 +1,48 @@
+# Builds the base runtime image, then both services, and pushes all three to Artifact Registry.
+#
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=spiffe-demo,_TAG=0.1.0
+steps:
+  - id: build-java-runtime
+    name: gcr.io/cloud-builders/docker
+    args: ['build', '-t', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/java-runtime:${_TAG}', 'images/java-runtime']
+
+  - id: push-java-runtime
+    name: gcr.io/cloud-builders/docker
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/java-runtime:${_TAG}']
+    waitFor: ['build-java-runtime']
+
+  - id: build-cart-service
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/cart-service:${_TAG}
+      - --build-arg
+      - BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/java-runtime:${_TAG}
+      - services/cart-service
+    waitFor: ['push-java-runtime']
+
+  - id: build-checkout-service
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/checkout-service:${_TAG}
+      - --build-arg
+      - BASE_IMAGE=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/java-runtime:${_TAG}
+      - services/checkout-service
+    waitFor: ['push-java-runtime']
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/java-runtime:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/cart-service:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/checkout-service:${_TAG}
+
+substitutions:
+  _REGION: us-central1
+  _REPO: spiffe-demo
+  _TAG: 0.1.0
+
+options:
+  logging: CLOUD_LOGGING_ONLY

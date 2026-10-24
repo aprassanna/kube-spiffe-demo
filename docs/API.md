@@ -23,11 +23,11 @@ Add an item:
 { "sku": "book-001", "quantity": 2, "unitPriceCents": 1250 }
 ```
 
-Checkout returns the order from checkout-service and clears the cart. Empty cart: 409. Checkout rejected: 502. No JWT-SVID from SPIRE: 503.
+Checkout returns the order from checkout-service and clears the cart. Empty cart: 409. Checkout rejected: 502. No X.509-SVID from SPIRE, or mTLS client setup failed: 503.
 
 ## Checkout service (Service B)
 
-Every `/api/**` request requires `Authorization: Bearer <JWT-SVID>`.
+The checkout API requires mutual TLS: the client presents an X.509-SVID during the TLS handshake.
 
 | Method | Path | Purpose | Success |
 |---|---|---|---|
@@ -63,12 +63,12 @@ Response:
 
 | Case | Status |
 |---|---|
-| No `Authorization` header, or not `Bearer` | 401 |
-| Token is malformed, unsigned, forged, expired, or has the wrong audience | 401 |
-| Token is valid, but its SPIFFE ID is not in `SPIFFE_ALLOWED_CALLERS` | 403 |
-| Token is valid and the SPIFFE ID is allowed | Request proceeds |
+| No client certificate, or the TLS handshake fails (unknown CA, expired, or tampered certificate) | Connection refused before HTTP (no status code) |
+| Certificate chains to SPIRE but has no SPIFFE ID | 401 |
+| Valid certificate, but its SPIFFE ID is not in `SPIFFE_ALLOWED_CALLERS` | 403 |
+| Valid certificate and the SPIFFE ID is allowed | Request proceeds |
 
-Checks are made against the SPIRE trust bundle for `example.org`, using the Workload API.
+The handshake validates the chain against the SPIRE trust bundle for `example.org`. The bundle and the workload certificate come from the SPIRE agent Workload API and rotate automatically.
 
 ## Identities
 

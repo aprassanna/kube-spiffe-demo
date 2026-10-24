@@ -1,0 +1,148 @@
+openapi: 3.0.3
+info:
+  title: Checkout Service (Service B)
+  version: 0.1.0
+  description: |
+    Service B in the SPIFFE demo. Every /api/** request must carry a JWT-SVID as a bearer
+    token. The token must:
+      - be signed by the SPIRE trust domain (verified against the SPIRE JWT bundle),
+      - have audience `checkout-service`,
+      - be unexpired, and
+      - have a SPIFFE ID listed in the allow-list (default spiffe://example.org/ns/cart/sa/cart-service).
+    /actuator/** is open for health checks.
+servers:
+  - url: http://checkout-service.checkout.svc.cluster.local
+    description: In-cluster address (reachable only from workloads that can get a JWT-SVID)
+security:
+  - spiffeJwtSvid: []
+paths:
+  /api/v1/orders:
+    post:
+      summary: Place an order
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Order placed. The Location header points to the order.
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /api/v1/orders/ord_3f2c9d1e-7a5b-4c1e-9d8f-2b6a1c0e4f77
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "400":
+          $ref: "#/components/responses/ProblemDetail"
+        "401":
+          description: Missing, malformed, forged, expired or wrong-audience JWT-SVID.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "403":
+          description: Valid JWT-SVID, but the SPIFFE ID is not on the allow-list.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+  /api/v1/orders/{orderId}:
+    get:
+      summary: Get an order
+      operationId: getOrder
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+        "401":
+          description: Missing, malformed, forged, expired or wrong-audience JWT-SVID.
+        "403":
+          description: Valid JWT-SVID, but the SPIFFE ID is not on the allow-list.
+        "404":
+          description: No such order.
+components:
+  securitySchemes:
+    spiffeJwtSvid:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: SPIFFE JWT-SVID issued by the SPIRE agent Workload API.
+  schemas:
+    CreateOrderRequest:
+      type: object
+      required: [cartId, items]
+      properties:
+        cartId:
+          type: string
+          example: demo-cart
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/LineItem"
+    LineItem:
+      type: object
+      required: [sku, quantity, unitPriceCents]
+      properties:
+        sku:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        unitPriceCents:
+          type: integer
+          format: int64
+          minimum: 0
+    OrderResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+        cartId:
+          type: string
+        totalCents:
+          type: integer
+          format: int64
+        status:
+          type: string
+          example: PLACED
+        placedBy:
+          type: string
+          description: SPIFFE ID of the authenticated caller.
+        createdAt:
+          type: string
+          format: date-time
+    ProblemDetail:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+  responses:
+    ProblemDetail:
+      description: Validation or request error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"

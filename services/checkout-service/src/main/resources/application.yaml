@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: checkout-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+# SPIFFE settings. Environment variables override these in the Kubernetes manifests.
+spiffe:
+  # Audience a caller must put in its JWT-SVID. Must match the cart-service checkout.audience.
+  audience: ${SPIFFE_AUDIENCE:checkout-service}
+  # Comma-separated SPIFFE IDs allowed to call /api/**.
+  allowed-callers: ${SPIFFE_ALLOWED_CALLERS:spiffe://example.org/ns/cart/sa/cart-service}

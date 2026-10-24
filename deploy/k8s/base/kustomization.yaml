@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Workloads only. SPIRE lives in deploy/spire and is applied first by scripts/deploy.sh.
+# Image references use the AR_PREFIX placeholder, which scripts/deploy.sh replaces with
+# <region>-docker.pkg.dev/<project>/<repo>.
+resources:
+  - namespaces.yaml
+  - cart-service.yaml
+  - checkout-service.yaml

@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Self-managed kubeadm cluster on Compute Engine: kubelet does not get Artifact Registry
+# credentials automatically, so each ServiceAccount references the "artifact-registry"
+# pull secret that scripts/deploy.sh creates in the cart and checkout namespaces.
+resources:
+  - ../../base
+patches:
+  - path: pull-secret-cart.yaml
+  - path: pull-secret-checkout.yaml

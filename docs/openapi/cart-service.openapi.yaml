@@ -1,0 +1,168 @@
+openapi: 3.0.3
+info:
+  title: Cart Service (Add to Cart)
+  version: 0.1.0
+  description: |
+    Service A in the SPIFFE demo. Holds carts in memory and checks them out by calling
+    checkout-service. The outbound call carries this service's JWT-SVID. This API itself is
+    unauthenticated; it exists to drive the demo.
+servers:
+  - url: http://cart-service.cart.svc.cluster.local
+    description: In-cluster address
+paths:
+  /api/carts/{cartId}:
+    parameters:
+      - $ref: "#/components/parameters/CartId"
+    get:
+      summary: Get a cart
+      operationId: getCart
+      responses:
+        "200":
+          description: Cart contents. An unknown cart ID returns an empty cart.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+  /api/carts/{cartId}/items:
+    parameters:
+      - $ref: "#/components/parameters/CartId"
+    post:
+      summary: Add an item to a cart
+      operationId: addItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddItemRequest"
+      responses:
+        "201":
+          description: Item added. Returns the updated cart.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartResponse"
+        "400":
+          $ref: "#/components/responses/ProblemDetail"
+  /api/carts/{cartId}/checkout:
+    parameters:
+      - $ref: "#/components/parameters/CartId"
+    post:
+      summary: Check out a cart through checkout-service
+      description: |
+        Sends the cart to checkout-service at POST /api/v1/orders with a JWT-SVID
+        (audience checkout-service). On success the cart is cleared.
+      operationId: checkout
+      responses:
+        "201":
+          description: Order placed by checkout-service.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutOrderResponse"
+        "409":
+          description: The cart is empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "502":
+          description: checkout-service rejected the call (for example 401 or 403 from the SPIFFE check).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          description: No JWT-SVID could be fetched from the SPIRE agent.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+components:
+  parameters:
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema:
+        type: string
+        example: demo-cart
+  schemas:
+    AddItemRequest:
+      type: object
+      required: [sku, quantity, unitPriceCents]
+      properties:
+        sku:
+          type: string
+          example: book-001
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+        unitPriceCents:
+          type: integer
+          format: int64
+          minimum: 0
+          example: 1250
+    CartItem:
+      type: object
+      properties:
+        sku:
+          type: string
+        quantity:
+          type: integer
+        unitPriceCents:
+          type: integer
+          format: int64
+    CartResponse:
+      type: object
+      properties:
+        cartId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartItem"
+        totalCents:
+          type: integer
+          format: int64
+    CheckoutOrderResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+          example: ord_3f2c9d1e-7a5b-4c1e-9d8f-2b6a1c0e4f77
+        cartId:
+          type: string
+        totalCents:
+          type: integer
+          format: int64
+        status:
+          type: string
+          example: PLACED
+        placedBy:
+          type: string
+          description: SPIFFE ID that checkout-service authenticated.
+          example: spiffe://example.org/ns/cart/sa/cart-service
+        createdAt:
+          type: string
+          format: date-time
+    ProblemDetail:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+  responses:
+    ProblemDetail:
+      description: Validation or request error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"

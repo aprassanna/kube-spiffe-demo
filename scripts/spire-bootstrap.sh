@@ -42,12 +42,15 @@ create_entry() {
 }
 
 register_workloads() {
-  local agents
-  agents="$(spire agent list | awk '/SPIFFE ID/ {print $NF}')"
-  if [ -z "$agents" ]; then
-    echo "No attested SPIRE agents found. Wait for the spire-agent DaemonSet and retry." >&2
-    exit 1
-  fi
+  # Agents attest after the DaemonSet starts, so on a fresh node pool they may not be listed yet.
+  local agents="" deadline=$((SECONDS + 300))
+  while [ -z "$agents" ]; do
+    agents="$(spire agent list | awk '/SPIFFE ID/ {print $NF}')"
+    if [ -z "$agents" ]; then
+      [ "$SECONDS" -lt "$deadline" ] || { echo "No attested SPIRE agents after 5 minutes. Check the spire-agent pods." >&2; exit 1; }
+      sleep 10
+    fi
+  done
 
   while read -r agent_id; do
     create_entry "$agent_id" "spiffe://$TRUST_DOMAIN/ns/cart/sa/cart-service" cart cart-service

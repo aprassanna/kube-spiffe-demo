@@ -184,6 +184,14 @@ PASS  self-signed certificate fails at the TLS handshake (curl exit 56)
 
 The kubeadm target has not been run.
 
+## Inspect the identities and the handshake
+
+`scripts/inspect-mtls.sh` prints the console links for this deployment, lists the SPIRE agents and registration entries, and describes the tokens in play. It also starts a debug pod under the `cart-service` ServiceAccount, fetches its X.509-SVID from the agent, and runs a live mTLS handshake against checkout (with and without the certificate). The pod is deleted on exit.
+
+```bash
+PROJECT_ID=your-project-id scripts/inspect-mtls.sh
+```
+
 ## Quick reference
 
 | Task | Command |
@@ -194,4 +202,5 @@ The kubeadm target has not been run.
 | Deploy to kubeadm | `scripts/deploy.sh kubeadm` |
 | Run the demo | `scripts/demo.sh` |
 | Everything | `scripts/test-all.sh` |
+| Inspect SVIDs and the handshake | `PROJECT_ID=... scripts/inspect-mtls.sh` |
 | API reference | [docs/API.md](docs/API.md) |

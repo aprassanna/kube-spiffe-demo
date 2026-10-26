@@ -1,0 +1,46 @@
+# Debug pod that runs under the cart-service ServiceAccount, so SPIRE issues it the same
+# X.509-SVID that cart-service receives. An init container fetches the SVID and trust bundle
+# from the agent Workload API into a shared volume; the tools container then uses openssl and
+# curl to show the mTLS handshake. Created and deleted by scripts/inspect-mtls.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: svid-inspector
+  namespace: cart
+  labels:
+    app.kubernetes.io/name: svid-inspector
+spec:
+  serviceAccountName: cart-service
+  automountServiceAccountToken: false
+  initContainers:
+    - name: fetch-svid
+      image: ghcr.io/spiffe/spire-agent:1.12.4
+      command: ["/opt/spire/bin/spire-agent"]
+      args:
+        - api
+        - fetch
+        - x509
+        - -socketPath
+        - /run/spire/agent-sockets/spire-agent.sock
+        - -write
+        - /shared
+      volumeMounts:
+        - name: spire-agent-socket
+          mountPath: /run/spire/agent-sockets
+          readOnly: true
+        - name: shared
+          mountPath: /shared
+  containers:
+    - name: tools
+      image: alpine:3.20
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: shared
+          mountPath: /shared
+  volumes:
+    - name: spire-agent-socket
+      hostPath:
+        path: /run/spire/agent-sockets
+        type: Directory
+    - name: shared
+      emptyDir: {}

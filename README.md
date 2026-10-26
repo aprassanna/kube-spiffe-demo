@@ -192,6 +192,19 @@ The kubeadm target has not been run.
 PROJECT_ID=your-project-id scripts/inspect-mtls.sh
 ```
 
+## Dormancy: pause the cluster to stop the cost
+
+`scripts/cluster-power.sh` puts the cluster to sleep and wakes it again:
+
+```bash
+PROJECT_ID=your-project-id scripts/cluster-power.sh status
+PROJECT_ID=your-project-id scripts/cluster-power.sh off            # scale nodes to 0 (node and disk charges stop)
+PROJECT_ID=your-project-id scripts/cluster-power.sh off --delete   # delete the cluster (cluster cost goes to 0)
+PROJECT_ID=your-project-id scripts/cluster-power.sh on             # scale up or recreate, then redeploy
+```
+
+`off` keeps the cluster, so the GKE control-plane fee (about /month) can still apply unless the free tier covers it. `off --delete` removes that fee too. Images stay in Artifact Registry. `on` redeploys everything, including the SPIRE trust bundle and registration entries, because the server state is not persisted.
+
 ## Quick reference
 
 | Task | Command |
@@ -202,5 +215,6 @@ PROJECT_ID=your-project-id scripts/inspect-mtls.sh
 | Deploy to kubeadm | `scripts/deploy.sh kubeadm` |
 | Run the demo | `scripts/demo.sh` |
 | Everything | `scripts/test-all.sh` |
+| Pause or resume the cluster | `PROJECT_ID=... scripts/cluster-power.sh off|on` |
 | Inspect SVIDs and the handshake | `PROJECT_ID=... scripts/inspect-mtls.sh` |
 | API reference | [docs/API.md](docs/API.md) |

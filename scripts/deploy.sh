@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
 # Deploys SPIRE and both services to the current kubectl context.
 #
-# Usage: scripts/deploy.sh gke|kubeadm
-# Required: PROJECT_ID, REGION
-# Optional: AR_REPO (default spiffe-demo), IMAGE_TAG is set in the manifests (0.1.0)
+# Usage: scripts/deploy.sh gke|kubeadm|local
+#   gke, kubeadm: images come from Artifact Registry. Requires PROJECT_ID and REGION.
+#   local:        images come from the local Docker daemon, loaded into kind (see README).
+#                 The kubectl context must be kind-spiffe-local.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-TARGET="${1:?usage: scripts/deploy.sh gke|kubeadm}"
+TARGET="${1:?usage: scripts/deploy.sh gke|kubeadm|local}"
 case "$TARGET" in
-  gke|kubeadm) ;;
-  *) echo "unknown target: $TARGET (use gke or kubeadm)" >&2; exit 2 ;;
+  gke|kubeadm)
+    PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
+    REGION="${REGION:?set REGION, for example us-central1}"
+    AR_REPO="${AR_REPO:-spiffe-demo}"
+    AR_PREFIX="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO"
+    ;;
+  local)
+    CONTEXT="$(kubectl config current-context)"
+    if [ "$CONTEXT" != "kind-spiffe-local" ]; then
+      echo "refusing to deploy the local target to context '$CONTEXT' (expected kind-spiffe-local)" >&2
+      exit 2
+    fi
+    AR_PREFIX="spiffe-local"
+    ;;
+  *)
+    echo "unknown target: $TARGET (use gke, kubeadm, or local)" >&2
+    exit 2
+    ;;
 esac
-
-PROJECT_ID="${PROJECT_ID:?set PROJECT_ID}"
-REGION="${REGION:?set REGION, for example us-central1}"
-AR_REPO="${AR_REPO:-spiffe-demo}"
-AR_PREFIX="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO"
 
 echo "Context: $(kubectl config current-context)  target: $TARGET  images: $AR_PREFIX"
 

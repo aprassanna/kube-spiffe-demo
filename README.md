@@ -205,6 +205,32 @@ PROJECT_ID=your-project-id scripts/cluster-power.sh on             # scale up or
 
 `off` keeps the cluster, so the GKE control-plane fee (about /month) can still apply unless the free tier covers it. `off --delete` removes that fee too. Images stay in Artifact Registry. `on` redeploys everything, including the SPIRE trust bundle and registration entries, because the server state is not persisted.
 
+## Run locally on your Mac (kind in Colima)
+
+The same SPIRE setup and demo run on a local single-node cluster. Nothing is billed.
+
+```bash
+brew install colima docker kind helm
+colima start --cpu 6 --memory 8 --disk 40 --vm-type vz
+kind create cluster --name spiffe-local
+
+docker build -t spiffe-local/cart-service:0.1.0 services/cart-service
+docker build -t spiffe-local/checkout-service:0.1.0 services/checkout-service
+kind load docker-image spiffe-local/cart-service:0.1.0 --name spiffe-local
+kind load docker-image spiffe-local/checkout-service:0.1.0 --name spiffe-local
+
+scripts/deploy.sh local     # refuses to run unless the context is kind-spiffe-local
+scripts/demo.sh
+```
+
+Stop the VM when you are done. Stopping Colima frees its RAM and the cluster state is kept:
+
+```bash
+colima stop
+```
+
+Delete the cluster as well with `kind delete cluster --name spiffe-local`. The local cluster runs on arm64 and Apple Silicon, so the `grpc-netty-linux` transport is exercised there too.
+
 ## Quick reference
 
 | Task | Command |

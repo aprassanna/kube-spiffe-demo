@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Local kind cluster: images are built on the Mac and loaded with 'kind load docker-image',
+# so they must not be pulled from a registry. IfNotPresent uses the loaded image.
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: Deployment
+      name: cart-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: Deployment
+      name: checkout-service
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
